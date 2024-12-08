@@ -1,7 +1,10 @@
-from fastapi import FastAPI, Response, status
+from fastapi import FastAPI, Response, status, Depends
 from contextlib import asynccontextmanager
-import asyncio
-import config
+# import asyncio
+from sqlalchemy.ext.asyncio import AsyncSession
+from database import get_db
+from crud import create_user_info, get_user_info, get_all_users
+from config import settings
 from kafka_reader import KafkaConsumerService
 import logging
 import model
@@ -10,14 +13,14 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler(config.LOG_FILENAME),
+        logging.FileHandler(settings.LOG_FILENAME),
         logging.StreamHandler()
     ]
 )
 
 logger = logging.getLogger(__name__)
 
-kafka_service = KafkaConsumerService(topic=config.KAFKA_TOPIC, bootstrap_servers=config.KAFKA_BOOTSTRAP_SERVERS)
+kafka_service = KafkaConsumerService(topic=settings.KAFKA_TOPIC, bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -31,26 +34,30 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-@app.post("/action")
-async def root(requestBody : model.ActionRequest, response: Response):
-    # MOCK
-    logger.info(f"Got action request: {str(requestBody)}")
-    # Here we update data for user in database
-    return {"film_id" : requestBody.film_id, "value" : requestBody.value}
+
+@app.post("/preferences/")
+async def create_user(user: model.UserInfo, response : Response, db: AsyncSession = Depends(get_db)):
+    # пока что вместо кафки
+    logger.info(f"create preferences for user with id = {user.user_id}")
+    try:
+        await create_user_info(db, user)
+        return {"status" : "ok"}
+    except:
+        response.status_code = status.HTTP_409_CONFLICT
+        return {"status" : "dublicate"}
 
 @app.get("/preferences/{user_id}")
-async def user_info(user_id : int, response : Response):
-    # MOCK
-    # try select from database user_id
-    # ....
-
-    # if user is not exist - return 404
-    if user_id != 1:
+async def user_info(user_id : int, response : Response, db: AsyncSession = Depends(get_db)):
+    try:
+        user_preferences = await get_user_info(db, user_id)
+        if user_preferences is None:
+            raise Exception("User not found")
+        logger.info(f"get preferences OK for user with id={user_id}")
+        return user_preferences
+    except Exception as e:
+        logger.error(f"get preferences error: {str(e)}")
         response.status_code = status.HTTP_404_NOT_FOUND
-        return
-
-    # return data from database
-    return {"user_id" : user_id, "avg_rating" : 4.5, "w" : [1,2,3,4,]}
+        return {"status" : "user not found"}
 
 @app.get("/health")
 async def health_check():
