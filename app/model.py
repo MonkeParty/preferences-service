@@ -16,6 +16,8 @@ class ActionRequest(BaseModel):
     movie_id : int
     user_id : int
     rate : float
+    genres : List[str]
+    tags : List[str]
 
 class MovieInfo(BaseModel):
     '''

@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from model import UserInfoDB
+from app.model import UserInfoDB
 from pydantic import BaseModel
 from typing import List, Optional
 

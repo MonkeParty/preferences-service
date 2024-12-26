@@ -1,19 +1,21 @@
 from aiokafka import AIOKafkaConsumer
-from config import settings
+from app.config import settings
 import asyncio
 import logging
-import model
+import app.model as model
 import json
 import requests
+from app.crud import update_user_info, get_user_info, create_user_info
 
 logger = logging.getLogger(__name__)
 
 class KafkaConsumerService:
-    def __init__(self, topic: str, bootstrap_servers: str):
+    def __init__(self, topic: str, bootstrap_servers: str, get_db):
         logger.info('Kafka init')
         self.topic = topic
         self.bootstrap_servers = bootstrap_servers
         self.consumer = None
+        self.get_db = get_db
 
     async def start(self):
         self.consumer = AIOKafkaConsumer(
@@ -24,17 +26,7 @@ class KafkaConsumerService:
         await self.consumer.start()
         logger.info(f"Kafka consumer connected to topic: {self.topic}")
 
-    def get_movie_info(movie_id : int) -> model.MovieInfo:
-        # don't forget add movie_id to request ?? нету спеки бля
-        movieResponse = requests.get(settings.MOVIE_SERVICE_HOST)
-        if movieResponse.status_code != 200:
-            raise Exception("Something wrong")
-        json_result = movieResponse.json()
-        return model.MovieInfo(movie_id=json_result['movie_id'], 
-                            genre=json_result['genre'], 
-                            avg_rate=json_result['avg_rate'])
-
-    async def processing(message : bytes):
+    async def processing(self, message : bytes):
         logger.info(f"Got message from kafka: {message.value.decode('utf-8')}")
         action_request = None
         try:
@@ -44,10 +36,37 @@ class KafkaConsumerService:
         except Exception as e:
             logger.error(f"Failed to decode JSON: {e}")
             return None
-        
-        # работаем с action_request
-        # тут обработка, вычисление весов и всего такого
-        # и обновление данных в БД
+        db_gen = self.get_db()
+        db = await anext(db_gen)
+        try:
+            genres = action_request.genres
+            try:
+                user_info = await get_user_info(db, action_request.user_id)
+                for i in genres:
+                    if i in user_info.genres_preference:
+                        user_info.genres_preference[i] = (user_info.genres_preference[i] + action_request.rate)/2
+                    else:
+                        user_info.genres_preference[i] = action_request.rate
+                await update_user_info(db, user_id=action_request.user_id, genres_preference=user_info.genres_preference)
+            except Exception as e:
+                genres_preferences = {}
+                for genre in genres:
+                    genres_preferences[genre] = action_request.rate
+                try:
+                    user = model.UserInfo(
+                        user_id=action_request.user_id,
+                        genres_preference=genres_preferences,
+                        avg_rating=0,
+                        tags_preference={},
+                        svd_vector=[],
+                    )
+                    await create_user_info(db, user)
+                except Exception as e:
+                    logger.error(f"Can't create new user from kafka rate event: {action_request}. Error: {e}")
+                    return        
+            logger.info(f"Data saved to database: {action_request}")
+        except Exception as e:
+            logger.error(f"Failed to save data to database: {e}")
         pass
 
     async def consume(self):
@@ -55,7 +74,7 @@ class KafkaConsumerService:
             async for message in self.consumer:
                 await self.processing(message)
         except Exception as e:
-            logger.error("Got error from Kafka: ", e)
+            logger.error(f"Got error from Kafka: {e}")
         finally:
             await self.consumer.stop()
 
